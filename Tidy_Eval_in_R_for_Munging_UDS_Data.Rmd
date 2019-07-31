@@ -1,23 +1,38 @@
 ---
-title: "Tidy Eval in R<br/>for Munging UDS Data"
-author: "Nicolas May"
-date: "July 31, 2019"
-output: ioslides_presentation
+title: "<br/>Tidy Eval in R<br/>for Munging UDS Data"
+author: "<b>Nicolas May</b><br/><b>Michigan Alzheimer's Disease Research Center</b>"
+date: "&nbsp;July 31, 2019"
+output:
+  ioslides_presentation:
+    logo: logo3.png
+    css: default_edit.css
+    widescreen: true
+    transition: faster
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 library(dplyr)
+library(tidyr)
+library(purrr)
+library(rlang)
+library(readr)
+library(stringr)
+library(lubridate)
 library(knitr)
 library(kableExtra)
 
+options("kableExtra.html.bsTable" = TRUE)
+
 pretty_print <- function(df) {
   df %>% 
-    kable(align = "c") %>% 
+    kable(align = "c") %>%
     kable_styling(
       font_size = 16,
-      bootstrap_options = c("striped", "bordered", "hover", "condensed", 
-                            "responsive"))
+      bootstrap_options = 
+        c("striped", "bordered", "hover", "condensed", "responsive"),
+      full_width = FALSE,
+      position = "float_left")
 }
 
 pretty_print_scroll <- function(df) {
@@ -25,409 +40,967 @@ pretty_print_scroll <- function(df) {
     kable(align = "c") %>% 
     kable_styling(
       font_size = 16,
-      bootstrap_options = c("striped", "bordered", "hover", "condensed", 
-                            "responsive")) %>% 
+      bootstrap_options = 
+        c("striped", "bordered", "hover", "condensed", "responsive"),
+      full_width = FALSE,
+      position = "float_left") %>% 
     scroll_box(width = "100%")
 }
+
+
+df_uds_a1 <- 
+  read_csv("./A7921316.csv", col_types = cols(.default = col_guess())) %>% 
+  na_if(".") %>% 
+  select(PACKET, FORMVER, PTID, 
+         VISITMO, VISITDAY, VISITYR, VISITNUM,
+         BIRTHMO, BIRTHYR,
+         SEX, RACE, EDUC, MARISTAT, HANDED) %>% 
+  mutate_at(vars(-one_of(c("PACKET", "PTID", "VISITNUM"))), as.integer)
+  
+df_uds_a3 <-
+  read_csv("./A6276113.csv", col_types = cols(.default = col_guess())) %>% 
+  na_if(".") %>% 
+  select(PACKET, FORMVER, PTID, 
+         VISITMO, VISITDAY, VISITYR, VISITNUM,
+         matches("^SIB\\d")) %>% 
+  mutate_at(vars(-one_of(c("PACKET", "PTID", "VISITNUM"))), 
+            as.integer) %>% 
+  mutate_at(vars(matches("MOB$")),
+            ~ replace(., . > 12L, NA_integer_)) %>%
+  mutate_at(vars(matches("YOB$")),
+            ~ replace(., . > year(Sys.Date()), NA_integer_)) %>%
+  mutate_at(vars(matches("AGD$")),
+            ~ replace(., . > 110L, NA_integer_)) %>%
+  mutate_at(vars(matches("AGO$")),
+            ~ replace(., . > 110L, NA_integer_))
+
+df_uds <-
+  left_join(df_uds_a1, df_uds_a3,
+            by = c("PACKET", "FORMVER", "PTID", 
+                   "VISITMO", "VISITDAY", "VISITYR", "VISITNUM")) %>% 
+  filter(!is.na(SIB1AGD)) %>% 
+  slice(1:50) %>% 
+  mutate(ptid_int = as.integer(str_sub(PTID, 3)) - 
+           round(runif(n = 1, min = 800, max = 1000))) %>% 
+  mutate(PTID = paste0("PT", strrep("0", 4 - nchar(ptid_int)), ptid_int)) %>% 
+  select(-ptid_int) %>% 
+  mutate(VISITMO = ((VISITMO + round(runif(1, 0, 11))) %% 12) + 1) %>% 
+  mutate(BIRTHMO = ((BIRTHMO + round(runif(1, 0, 11))) %% 12) + 1) %>% 
+  mutate(BIRTHYR = BIRTHYR + round(runif(1, -5, 5)))
+
+df_uds_abrv <-
+  df_uds %>% 
+  select(PTID, BIRTHMO, BIRTHYR, SEX, RACE, EDUC, MARISTAT, HANDED)
 ```
+
 
 # Tidy Eval
 
-## Tidy Eval in R
 
-_**Tidy Eval**_ is a conceptual framework for doing metaprogramming in R. 
+## Tidy Eval in R {.build}
 
-> - **Metaprogramming** is the idea that we can treat code as data -- data that can be acted on by other code. 
-> - When we treat **code as data**, it can be read, written, analyzed, and edited by other code.
-> - Writing the "other code" that handles code-as-data is **metaprogramming**.
+<b>Tidy Eval</b> is a conceptual framework for doing metaprogramming in R.
 
-<br />
-<p style="font-size:14px;">For a deep dive into this topic, check out the Metaprogramming section in [_**Advanced R**_](https://adv-r.hadley.nz/) (2nd edition) by Hadley Wickham.</p>
+K... but what's <b>metaprogramming</b>?
+
+<b>Metaprogramming</b> is treating code as data -- data that can be acted on by other code.
+
+When we treat <b>code as data</b>, it can be read, analyzed, edited, and written by other code.
+
+Writing the "other code" that handles code-as-data is <b>metaprogramming</b>.
+
+Cool, huh?! 😎&nbsp;
+
+
+## Tidy Eval in R {.build}
+
+R's LISP-y heritage means metaprogramming is built in.
+
+Unfortunately, metaprogramming in base R is a little clunky.
+
+<b>Tidy Eval</b> is a conceptual framework that makes metaprogramming in R more consistent and accessible.
+
+The R package that makes Tidy Eval possible is `rlang`.
+
+For a deep dive into Tidy Eval, check out the "Metaprogramming" section in <b>[Advanced R](https://adv-r.hadley.nz/) (2nd edition)</b> by Hadley Wickham.
+
+
+## Tidy Eval for Iterating Fields {.build}
+
+Why would metaprogramming be useful for dealing with UDS 3 data?
+
+Form A3 has 140 sibling data fields:
+
+<div style="font-size:20px;">
+
+<ul>
+
+<li>
+SIB<span style="color:red;">1</span><span style="color:blue;">MOB</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">YOB</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">AGD</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">NEU</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">PDX</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">MOE</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">AGO</span>
+</li>
+
+<li>
+SIB<span style="color:red;">2</span><span style="color:blue;">MOB</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">YOB</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">AGD</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">NEU</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">PDX</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">MOE</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">AGO</span>
+</li>
+
+<li>
+SIB<span style="color:red;">3</span><span style="color:blue;">MOB</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">YOB</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">AGD</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">NEU</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">PDX</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">MOE</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">AGO</span>
+</li>
+
+<li>
+... ... ...
+</li>
+
+<li>
+... ... ...
+</li>
+
+<li>
+... ... ...
+</li>
+
+<li>
+SIB<span style="color:red;">20</span><span style="color:blue;">MOB</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">YOB</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">AGD</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">NEU</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">PDX</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">MOE</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">AGO</span>
+</li>
+
+</ul>
+
+</div>
+
+&nbsp;
+20 possible siblings $\times$ 7 data points = 140 sibling fields
+
+
 
 # Setup
 
-<!-- ## EPA Fuel Economy Data -->
 
-```{r epa_mpg, echo=FALSE, eval=TRUE}
-# library(readxl)
-# epa_mpg <- read_excel("./19tstcar-2019-03-14.xlsx") %>% 
-#   select(make  = `Represented Test Veh Make`,
-#          model = `Represented Test Veh Model`,
-#          trim  = `Test Veh Configuration #`,
-#          displ = `Test Veh Displacement (L)`,
-#          type  = `Vehicle Type`,
-#          hp    = `Rated Horsepower`,
-#          cyl   = `# of Cylinders and Rotors`,
-#          trans = `Tested Transmission Type`,
-#          gears = `# of Gears`,
-#          whls  = `Drive System Description`,
-#          wght  = `Equivalent Test Weight (lbs.)`,
-#          mpg   = `RND_ADJ_FE`,
-#          categ = `Test Category`) %>% 
-#   filter(trim == 0, categ == "FTP") %>% 
-#   group_by()
+## UDS Dataset `df_uds` with Form A1 + A3 Fields
+
+```{r eval=FALSE, echo=TRUE}
+head(df_uds) %>% 
+  pretty_print_scroll
 ```
 
-## `mtcars` as a Tibble
-
-```{r mtcars_1, echo=TRUE, eval=TRUE}
-library(dplyr); library(stringr)
-mtcars_tbl <- mtcars %>% 
-  as_tibble(rownames = "model") %>% 
-  mutate(model = case_when(
-    str_detect(model, "Hornet") ~ paste("AMC", model),
-    str_detect(model, "Camaro") ~ paste("Chevrolet", model),
-    str_detect(model, "Duster") ~ paste("Plymouth", model),
-    str_detect(model, "Valiant") ~ paste("Plymouth", model),
-    str_detect(model, "Merc") ~ 
-      str_replace(model, "Merc", "Mercedes"),
-    TRUE ~ model
-  )) %>% 
-  mutate(make = str_replace(model, "(\\w+)\\W.+", "\\1")) %>% 
-  mutate(model = str_replace(model, paste0(make, " "), "")) %>% 
-  mutate_at(c("cyl", "hp", "vs", "am", "gear", "carb"), as.integer) %>% 
-  select(make, model, everything())
+```{r eval=TRUE, echo=FALSE}
+options(knitr.kable.NA = '')
+head(df_uds) %>% pretty_print_scroll
 ```
 
-## `mtcars` as a Tibble
 
-```{r mtcars_2, echo=TRUE, eval=TRUE}
-mtcars_tbl %>% head()
+## UDS Dataset `df_uds` with Form A1 + A3 Fields {.smaller}
+
+<div id="hellascroll">
+```{r eval=TRUE, echo=FALSE}
+df_uds %>% glimpse
 ```
+</div>
 
-## `mtcars` as a Tibble
+# Caveats
 
-```{r mtcars_3, echo=TRUE, eval=TRUE}
-mtcars_tbl %>% glimpse()
-```
+## Pipe Operator {.build}
+
+Extensive use of the pipe operator, `%>%` from `magrittr` or `%>>%` from `pipeR`
+
+### Basics
+
+> - `f(x)` is equivalent to `x %>% f`
+
+> - `f(x, y)` is equivalent to `x %>% f(y)`
+
+> - `x %>% f %>% g %>% h` is equivalent to `h(g(f(x)))`
+
+### Dot Placeholder
+
+> - `y %>% f %>% g(x, .)` is equivalent to `g(x, f(y))`
+
+
+## 0 to 60 &nbsp;&nbsp; 🏎&nbsp;💨&nbsp;
+
+Goals:
+
+1. Outline basic ideas and glimpse some building blocks
+
+2. Demonstrate how building blocks can be used with UDS data
+
+<br/> ... we do get into the weeds
+
+
 
 # Expressions
 
-## Expressions as Arguments
 
-> - To treat code as data, we need some way to capture the code expressions before they're evaluated.
+## Expressions as Arguments {.build}
 
-> - Those familiar with the R [tidyverse](https://www.tidyverse.org/) have seen this in action with `dplyr`.
+To treat code as data, we need some way to capture the code expressions that are passed to a function before they're evaluated within the function.
+
+Those familiar with the R tidyverse have seen this in action with `dplyr`.
 
 ```{r expressions_1, echo=TRUE, eval=TRUE}
 library(dplyr)
-filter(mtcars_tbl, hp > 300) # hp = horsepower
+df_uds_abrv %>% 
+  filter(EDUC >= 20)
 ```
 
-> - Notice the filter condition `hp > 300` isn't a string. It's an expression.
+Notice the filter condition `EDUC >= 20` isn't a string. It's an expression.
 
-## Expressions vs. Strings
 
-> - `hp > 300` is an expression.
+## Expressions vs. Strings {.build}
 
-> - `"hp > 300"` is a string.
+`EDUC >= 20` is an expression.
+
+`"EDUC >= 20"` is a string.
 
 ```{r expressions_2, echo=TRUE, eval=TRUE}
 library(dplyr)
-filter(mtcars_tbl, hp > 300) # hp = horsepower
+df_uds_abrv %>% 
+  filter(EDUC >= 20)
 ```
 
-> - How does `dplyr` do this? How does it capture the expression?
+How does `dplyr` do this? How does it capture the expression?
 
-## Expression Capture
 
-Suppose we'd like to build our own function that helps us summarize a data frame (like `mtcars_tbl`) with some descriptive statistics.
+## Expression Capture {.build}
+
+Suppose we'd like to build our own function that helps us summarize a data frame (like `df_uds`) with some descriptive statistics.
 
 Here's a simple example with `dplyr::summarize` to build on:
 
 ```{r how_dplyr_1, echo=TRUE, eval=TRUE}
-mtcars_tbl %>% 
-  summarize(mean_hp = mean(hp))
+df_uds %>%
+  summarize(mean(EDUC))
 ```
 
-## Expression Capture
 
-Instead of finding the mean of all cars, what if we want to group the cars by number of cylinders, `cyl`?
+## Expression Capture {.build}
+
+Instead of finding the mean of all participants, what if we want to group the participants by sex, `SEX`?
 
 ```{r how_dplyr_2, echo=TRUE, eval=TRUE}
-mtcars_tbl %>% 
+df_uds %>% 
   ### <b>
-  group_by(cyl) %>% 
+  group_by(SEX) %>% 
   ### </b>
-  summarize(mean_hp = mean(hp))
+  summarize(mean(EDUC))
 ```
 
-## Expression Capture
 
-Of course, we could group by other fields like `gear`.
+## Expression Capture {.build}
+
+Of course, we could group by other fields like `RACE`.
 
 ```{r how_dplyr_3, echo=TRUE, eval=TRUE}
-mtcars_tbl %>% 
+df_uds %>% 
   ### <b>
-  group_by(gear) %>% 
+  group_by(RACE) %>% 
   ### </b>
-  summarize(mean_hp = mean(hp))
+  summarize(mean(EDUC))
 ```
 
-## Expression Capture
 
-Or `make`.
+## Expression Capture {.build}
+
+Or `MARISTAT`.
 
 ```{r how_dplyr_4, echo=TRUE, eval=TRUE}
-mtcars_tbl %>% 
+df_uds %>% 
   ### <b>
-  group_by(make) %>% 
+  group_by(MARISTAT) %>% 
   ### </b>
-  summarize(mean_hp = mean(hp)) %>% head()
+  summarize(mean(EDUC))
 ```
 
-## Expression Capture
 
-Can we create a custom function that allows us to pass whatever grouping variable we want (`cyl`, `gear`, `make`)?
+## Expression Capture {.build}
+
+Can we create a custom function that allows us to pass whatever grouping variable we want (`SEX`, `RACE`, `MARISTAT`)?
 
 ```{r how_dplyr_5, echo=TRUE, eval=TRUE}
-group_by_mean_hp <- function(df, group_var) {
+### <b>
+mean_EDUC_group_by <- function(df, group_var) {
+### </b>
   df %>% 
     ### <b>
     group_by(group_var) %>% 
     ### </b>
-    summarize(mean_hp = mean(hp))
+    summarize(mean(EDUC))
 }
 ```
 
-Call the function using `cyl` as a grouping variable.
+Call the function using `SEX` as a grouping variable.
 
 ```{r how_dplyr_6, echo=TRUE, eval=TRUE, error=TRUE}
-mtcars_tbl %>% 
-  group_by_mean_hp(cyl)
+df_uds %>% 
+  mean_EDUC_group_by(SEX)
 ```
 
-## Expression Capture
 
-Within the function, `group_var` is unknown. We'd have to add it explicitly _**within**_ the function for it to work. But that defeats the purpose.
+## Expression Capture {.build}
+
+Within the function, `group_var` is unknown. We'd have to add it explicitly <b>within</b> the function for it to work. But that defeats the purpose.
 
 ```{r how_dplyr_7, echo=TRUE, eval=TRUE}
-group_by_mean_hp <- function(df, group_var) {
+mean_EDUC_group_by <- function(df, group_var) {
   df %>% 
     ### <b>
-    group_by(cyl) %>% 
+    group_by(SEX) %>% 
     ### </b>
-    summarize(mean_hp = mean(hp))
+    summarize(mean(EDUC))
 }
-mtcars_tbl %>% 
-  group_by_mean_hp(cyl)
+df_uds %>% 
+  ### <b>
+  mean_EDUC_group_by(RACE) # Doesn't matter what user passes! ### </b>
 ```
 
-## Expression Capture
 
-How do we capture the `cyl` expression passed to `group_by_mean_hp` by the user?
+## Expression Capture {.build}
 
-We need to use tidy eval, specifically the `enexpr` function from the `rlang` package. `enexpr` captures the expression passed by the user.
+How do we capture the expression `SEX` passed to `mean_EDUC_group_by` by the user?
+
+We need to use Tidy Eval, specifically the `enquo` function from the `rlang` package. `enquo` captures -- or "quotes" -- the expression passed by the user.
 
 ```{r how_dplyr_8, echo=TRUE, eval=TRUE}
 library(rlang)
-group_by_mean_hp <- function(df, group_var) {
+mean_EDUC_group_by <- function(df, group_var) {
   ### <b>
-  group_var_expr <- enexpr(group_var)
+  group_var_quo <- enquo(group_var)
   ### </b>
+  
   df %>% 
     ### <b>
-    group_by(group_var_expr) %>%
+    group_by(group_var_quo) %>%
     ### </b>
-    summarize(mean_hp = mean(hp))
+    summarize(mean(EDUC))
 }
 ```
 
-## Expression Capture
 
-Let's give the updated `group_by_mean_hp` function a whirl.
+## Expression Capture {.build}
+
+Let's give the updated `mean_EDUC_group_by` function a whirl.
 
 ```{r how_dplyr_10, echo=TRUE, eval=TRUE, error=TRUE}
-mtcars_tbl %>% 
-  group_by_mean_hp(cyl)
+df_uds %>% 
+  mean_EDUC_group_by(SEX)
 ```
 
 There's still an error. Why?
 
-## Expression Capture
 
-We "quoted" (or captured) the expression `cyl`. 
+## Expression Capture {.build .smaller}
+
+We captured -- or "quoted" -- the expression `SEX` with `group_var_quo`.
 
 ```{r how_dplyr_11a, echo=TRUE, eval=FALSE}
-group_by_mean_hp <- function(df, group_var) {
-  group_var_expr <- enexpr(group_var)
+mean_EDUC_group_by <- function(df, group_var) {
+  ### <b>
+  group_var_quo <- enquo(group_var)
+  ### </b>
   df %>% 
     ### <b>
-    group_by(group_var_expr) %>% 
+    group_by(group_var_quo) %>% 
     ### </b>
-    summarize(mean_hp = mean(hp))
+    summarize(mean(EDUC))
 }
 ```
 
-For `group_by` to evaluate it, "unquote" it with `!!` operator.
+But for `group_by` to evaluate `group_var_quo` as the expression `SEX`, "unquote" `group_var_quo` with `!!` operator.
 
 ```{r how_dplyr_11b, echo=TRUE, eval=TRUE}
-group_by_mean_hp <- function(df, group_var) {
-  group_var_expr <- enexpr(group_var)
+mean_EDUC_group_by <- function(df, group_var) {
+  ### <b>
+  group_var_quo <- enquo(group_var)
+  ### </b>
   df %>% 
     ### <b>
-    group_by(!!group_var_expr) %>% 
+    group_by(!!group_var_quo) %>% 
     ### </b>
-    summarize(mean_hp = mean(hp))
+    summarize(mean(EDUC))
 }
 ```
 
-## Expression Capture
 
-Let's try again with `cyl`.
+## Expression Capture {.build}
+
+Let's try again with `SEX`.
 
 ```{r how_dplyr_12, echo=TRUE, eval=TRUE, error=TRUE}
-mtcars_tbl %>% 
-  group_by_mean_hp(cyl)
+df_uds %>% 
+  mean_EDUC_group_by(SEX)
 ```
 
-## Expression Capture
 
-And again with `gear`.
+## Expression Capture {.build}
+
+And again with `RACE`.
 
 ```{r how_dplyr_13, echo=TRUE, eval=TRUE, error=TRUE}
-mtcars_tbl %>% 
-  group_by_mean_hp(gear)
+df_uds %>% 
+  mean_EDUC_group_by(RACE)
 ```
 
-## Expanding on Expression Capture
 
-Can we generalize `group_by_mean_hp` a bit? 
+## Expanding on Expression Capture {.build}
 
-What if we want the mean of something other than `hp`?
+Can we generalize `mean_EDUC_group_by` a bit? 
+
+What if we want the mean of something other than `EDUC`?
 
 Well, we can use the same principles we just applied to the `group_var` argument.
 
-```{r expand_expr_1, echo=TRUE, eval=TRUE}
+```{r expand_quo_1, echo=TRUE, eval=TRUE}
 group_by_mean <- function(df, group_var, mean_var) {
-  group_var_expr <- enexpr(group_var)
-  mean_var_expr <- enexpr(mean_var)
+  group_var_quo <- enquo(group_var)
+  ### <b>
+  mean_var_quo <- enquo(mean_var)
+  ### </b>
   
   df %>% 
-    group_by(!!group_var_expr) %>% 
-    summarize(mean = mean(!!mean_var_expr))
+    group_by(!!group_var_quo) %>% 
+    ### <b>
+    summarize(mean(!!mean_var_quo))
+  ### </b>
 }
 ```
 
-## Expanding on Expression Capture
+
+## Expanding on Expression Capture {.build}
 
 Let's try it out.
 
-```{r expand_expr_2, echo=TRUE, eval=TRUE}
-mtcars_tbl %>% 
-  group_by_mean(group_var = cyl, mean_var = hp)
+```{r expand_quo_2, echo=TRUE, eval=TRUE}
+df_uds %>% 
+  group_by_mean(group_var = SEX, mean_var = EDUC)
 ```
 
-But `mean` as a summary table label isn't very meaningful. 
+But \`mean(EDUC)\` as a summary table label is ugly.
 
 Can we improve on this?
 
-## Expanding on Expression Capture
+## Expanding on Expression Capture {.build}
 
-```{r expand_expr_3, echo=TRUE, eval=FALSE, error=FALSE}
+```{r expand_quo_4, echo=TRUE, eval=FALSE, error=FALSE}
 group_by_mean <- function(df, group_var, mean_var) {
-  group_var_expr  <- enexpr(group_var)
-  mean_var_expr   <- enexpr(mean_var)
+  group_var_quo  <- enquo(group_var)
+  mean_var_quo   <- enquo(mean_var)
   
   ### <b>
-  mean_label_str  <- paste0("mean_", as_string(mean_var_expr))
-  mean_label_expr <- enexpr(mean_label_str)
+  mean_var_str   <- paste0("mean_", quo_name(mean_var_quo))
   ### </b>
   
   df %>% 
-    group_by(!!group_var_expr) %>% 
+    group_by(!!group_var_quo) %>% 
     ### <b>
-    summarize(!!mean_label_expr = mean(!!mean_var_expr))
+    summarize(!!mean_var_str = mean(!!mean_var_quo))
   ### </b>
 }
 ```
 
-## Expanding on Expression Capture
-
-```{r expand_expr_4, echo=TRUE, eval=FALSE, error=FALSE}
+```{r expand_quo_5, echo=FALSE, eval=TRUE, error=TRUE}
 group_by_mean <- function(df, group_var, mean_var) {
-  group_var_expr  <- enexpr(group_var)
-  mean_var_expr   <- enexpr(mean_var)
+  group_var_quo  <- enquo(group_var)
+  mean_var_quo   <- enquo(mean_var)
   
-  ### <b>
-  mean_label_str  <- paste0("mean_", as_string(mean_var_expr))
-  mean_label_expr <- enexpr(mean_label_str)
-  ### </b>
+  mean_var_str   <- paste0("mean_", quo_name(mean_var_quo))
   
   df %>% 
-    group_by(!!group_var_expr) %>% 
-    ### <b>
-    summarize(!!mean_label_expr = mean(!!mean_var_expr))
-  ### </b>
+    group_by(!!group_var_quo) %>% 
+    summarize(!!mean_var_str = mean(!!mean_var_quo))
 }
 ```
 
-```{r expand_expr_5, echo=FALSE, eval=TRUE, error=TRUE}
-group_by_mean <- function(df, group_var, mean_var) {
-  group_var_expr  <- enexpr(group_var)
-  mean_var_expr   <- enexpr(mean_var)
-  
-  mean_label_str  <- paste0("mean_", as_string(mean_var_expr))
-  mean_label_expr <- enexpr(mean_label_str)
-  
-  df %>% 
-    group_by(!!group_var_expr) %>% 
-    summarize(!!mean_label_expr = mean(!!mean_var_expr))
-}
-```
 
-## Expanding on Expression Capture
+## Expanding on Expression Capture {.build}
 
-```{r expand_expr_6, echo=TRUE, eval=TRUE}
+```{r expand_quo_6, echo=TRUE, eval=TRUE}
 group_by_mean <- function(df, group_var, mean_var) {
-  group_var_expr  <- enexpr(group_var)
-  mean_var_expr   <- enexpr(mean_var)
+  group_var_quo  <- enquo(group_var)
+  mean_var_quo   <- enquo(mean_var)
   
   ### <b>
-  mean_label_str  <- paste0("mean_", as_string(mean_var_expr))
-  mean_label_expr <- enexpr(mean_label_str)
+  mean_var_str   <- paste0("mean_", quo_name(mean_var_quo))
   ### </b>
   
   df %>% 
-    group_by(!!group_var_expr) %>% 
+    group_by(!!group_var_quo) %>% 
     ### <b>
-    summarize(!!mean_label_expr := mean(!!mean_var_expr))
+    summarize(!!mean_var_str := mean(!!mean_var_quo))
   ### </b>
 }
 ```
 
 When the LHS is an unquoted expression, we need `:=`, a special assignment operator.
 
-## Expanding on Expression Capture
 
-```{r expand_expr_7, echo=TRUE, eval=TRUE, error=TRUE}
-mtcars_tbl %>% group_by_mean(group_var = cyl, mean_var = hp)
-mtcars_tbl %>% group_by_mean(group_var = gear, mean_var = mpg)
+## Expanding on Expression Capture {.build}
+
+```{r expand_quo_7, echo=TRUE, eval=TRUE, error=TRUE}
+df_uds %>% group_by_mean(group_var = SEX, mean_var = EDUC)
+df_uds %>% group_by_mean(group_var = RACE, mean_var = SIB1AGD)
 ```
 
-## Expression Capture Summary
 
-> - We can pass expressions to functions.
+## Expression Capture Summary {.build}
 
-> - We can capture the expressions in order to manipulate them.
+We can pass expressions to functions.
 
-> - We can use functions/operators from the `rlang` package such as `enexpr`, `!!`, `as_string`, and `:=` to quote (capture), manipulate, and unquote expressions passed to a function.
+We can capture the expressions in order to manipulate them.
+
+We can use functions/operators from the `rlang` package such as `enquo`, `!!`, `quo_name`, and `:=` to quote (capture), manipulate, and unquote expressions passed to a function.
 
 
-# UDS 3 Data
 
-## UDS 3 Data
+# Applying Expression Capture<br/>to UDS 3 Data
 
-Why would metaprogramming be useful for managing UDS 3 data?
 
-Sample dataset using [REDCap Collaborative UDS 3.0](https://www.alz.washington.edu/NONMEMBER/FALL17/Data/Hunt.pdf) data dictionary from **KU ADC**.
+## Tidy Eval for Iterating Fields
+
+Why would metaprogramming be useful for dealing with UDS 3 data?
+
+Form A3 has 140 sibling data fields:
+
+<div style="font-size:20px;">
+
+<ul>
+
+<li>
+SIB<span style="color:red;">1</span><span style="color:blue;">MOB</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">YOB</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">AGD</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">NEU</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">PDX</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">MOE</span>, 
+SIB<span style="color:red;">1</span><span style="color:blue;">AGO</span>
+</li>
+
+<li>
+SIB<span style="color:red;">2</span><span style="color:blue;">MOB</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">YOB</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">AGD</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">NEU</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">PDX</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">MOE</span>, 
+SIB<span style="color:red;">2</span><span style="color:blue;">AGO</span>
+</li>
+
+<li>
+SIB<span style="color:red;">3</span><span style="color:blue;">MOB</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">YOB</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">AGD</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">NEU</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">PDX</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">MOE</span>, 
+SIB<span style="color:red;">3</span><span style="color:blue;">AGO</span>
+</li>
+
+<li>
+... ... ...
+</li>
+
+<li>
+... ... ...
+</li>
+
+<li>
+... ... ...
+</li>
+
+<li>
+SIB<span style="color:red;">20</span><span style="color:blue;">MOB</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">YOB</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">AGD</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">NEU</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">PDX</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">MOE</span>, 
+SIB<span style="color:red;">20</span><span style="color:blue;">AGO</span>
+</li>
+
+</ul>
+
+</div>
+
+&nbsp;
+20 possible siblings $\times$ 7 data points = 140 sibling fields
+
+
+## Tidy Eval for Iterating Fields {.build}
+
+If we want to do any data validation or simple analysis of all those fields, the code becomes repetitive, error-prone, and hard to maintain.
+
+The basic components of all 140 sibling fields can be expressed simply with code:
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+sib_base <- "SIB"
+sib_nums <- 1:20
+sib_data <- c("MOB", "YOB", "AGD", "NEU", "PDX", "MOE", "AGO")
+```
+
+
+## Tidy Eval for Iterating Fields {.build}
+
+The components can then be easily combined:
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+library(tidyr) # for `crossing` and `unite`
+sib_fields <- 
+  crossing(sib_base, sib_nums, sib_data) %>% # "SIB", 1:20, c("MOB", "YOB", ...)
+  arrange(sib_nums) %>%                      # to force expected ordering
+  unite(sib_fields, sep = "") %>% 
+  pull(sib_fields)
+```
+
+<div id="hellascroll2">
+```{r echo=FALSE, eval=TRUE, error=TRUE}
+sib_fields
+```
+</div>
+
+
+## Tidy Eval for Iterating Fields {.build}
+
+Suppose we want to see some basic descriptives of all the sibling fields (e.g., min, max, median, mean) in order (1) ensure there aren't any unexpected values, and (2) for continuous variables (AGD, AGO) get a sense of their distributions.
+
+Effectively, we'd like to do 20 siblings $\times$ 7 data points $\times$ 4 statistics = 560 calculations.
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+We could start here...
+
+```{r echo=TRUE, eval=FALSE, error=TRUE}
+df_uds %>% 
+  summarize(
+    # SIB1MOB
+    SIB1MOB_min  = min(SIB1MOB, na.rm = TRUE),
+    SIB1MOB_max  = min(SIB1MOB, na.rm = TRUE),
+    SIB1MOB_med  = median(SIB1MOB, na.rm = TRUE),
+    SIB1MOB_mean = mean(SIB1MOB, na.rm = TRUE),
+    # SIB1YOB
+    SIB1YOB_min  = min(SIB1YOB, na.rm = TRUE),
+    SIB1YOB_max  = max(SIB1YOB, na.rm = TRUE),
+    SIB1MOB_med  = median(SIB1YOB, na.rm = TRUE),
+    SIB1MOB_mean = mean(SIB1YOB, na.rm = TRUE),
+    # ...
+    # ... at least 548 lines of copy-pasta'ed code goes here
+    # ...
+    # SIB20AGO
+    SIB20AGO_min  = min(SIB20AGO, na.rm = TRUE),
+    SIB20AGO_max  = max(SIB20AGO, na.rm = TRUE),
+    SIB20AGO_med  = median(SIB20AGO, na.rm = TRUE),
+    SIB20AGO_mean = mean(SIB20AGO, na.rm = TRUE)
+  )
+```
+
+
+## Tidy Eval for Iterating Fields {.build}
+
+Instead, let's write a function that effectively writes the code for us.
+
+Input:
+
+1. A data frame of UDS Form A3 data
+
+2. The functions we'd like to apply
+
+3. Components of the sibling fields we want to apply functions to
+
+Output:
+
+1. A data frame with our results
+
+
+## Tiny Eval for Iterating Fields {.build}
+
+Nice helper function from `tidyr` package for creating all combinations of elements... `crossing`.
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+library(tidyr)
+crossing(chars = c("a", "b", "c"), nums = 1:2)
+```
+
+
+## Tidy Eval for Iterating Fields {.build}
+
+To paste the combinations together into a single vector, use `tidyr::unite` and `dplyr::pull`.
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+crossing(chars = c("a", "b", "c"), nums = 1:2) %>% 
+  unite(chars_nums, sep = "") %>% 
+  pull(chars_nums)
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+Let's start writing our function.
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn <- function(df, funcs, ...) {
+  # sib_base <- "SIB"
+  # sib_nums <- 1:2
+  # sib_data <- c("MOB", "YOB")
+  ### <b>
+  # Combine user-passed field components
+  crossing(...)
+  ### </b>
+}
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+sib_base <- "SIB"
+sib_nums <- 1:2
+sib_data <- c("MOB", "YOB")
+
+my_summary_fxn(df = df_uds, 
+               funcs = list(min, max),
+               ### <b>
+               sib_base, sib_nums, sib_data) ### </b>
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn <- function(df, funcs, ...) {
+  # sib_base <- "SIB"
+  # sib_nums <- 1:2
+  # sib_data <- c("MOB", "YOB")
+  ### <b>
+  # Combine user-passed field components into symbols
+  fields_syms <-
+    crossing(...) %>% 
+    unite(fields, sep = "") %>% 
+    pull(fields) %>% 
+    syms 
+  ### </b>
+  
+  fields_syms
+}
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn(df = df_uds, 
+               funcs = list(min, max),
+               ### <b>
+               sib_base, sib_nums, sib_data) ### </b>
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn <- function(df, funcs, ...) {
+  # Combine user-passed field components into symbols
+  fields_syms <- crossing(...) %>% 
+    unite(fields, sep = "") %>% pull(fields) %>% syms
+  
+  ### <b>
+  # Capture/quote functions as expressions
+  funcs_exprs <- enexpr(funcs)[-1] # list, min, max => min, max
+  ### </b>
+  
+  as.list(funcs_exprs)
+}
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn(df = df_uds, 
+               ### <b>
+               funcs = list(min, max), 
+               ### </b>
+               sib_base, sib_nums, sib_data)
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn <- function(df, funcs, ...) {
+  # Combine user-passed field components into symbols
+  fields_syms <- crossing(...) %>% 
+    unite(fields, sep = "") %>% pull(fields) %>% syms
+  
+  # Capture/quote functions as expressions
+  funcs_exprs <- enexpr(funcs)[-1] # list, min, max => min, max
+  
+  ### <b>
+  # Map over function expressions and field symbols, evaluating with `summarize`
+  map_dfc(funcs_exprs, # min, max
+          function(func_expr) {
+            as_string(func_expr)
+          }) 
+  ### </b>
+}
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn(df = df_uds, 
+               ### <b>
+               funcs = list(min, max),
+               ### </b>
+               sib_base, sib_nums, sib_data) %>% 
+  pretty_print
+```
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn(df = df_uds, 
+               ### <b>
+               funcs = list(min, max, median, mean),
+               ### </b>
+               sib_base, sib_nums, sib_data) %>% 
+  pretty_print
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn <- function(df, funcs, ...) {
+  # Combine user-passed field components into symbols
+  fields_syms <- crossing(...) %>% 
+    unite(fields, sep = "") %>% pull(fields) %>% syms
+  
+  # Capture/quote functions as expressions
+  funcs_exprs <- enexpr(funcs)[-1] # list, min, max => min, max
+  
+  # Map over function expressions and field symbols, evaluting with `summarize`
+  map_dfc(funcs_exprs, # min, max
+          function(func_expr) {
+            ### <b>
+            map_dfc(fields_syms, # SIB1MOB, SIB1YOB, ...
+                    function(field_sym) {
+                      #      min, ...        SIB1MOB, ...
+                      paste0(func_expr, "_", field_sym)
+                    })
+            ### </b>
+          })
+}
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn(df = df_uds, 
+               funcs = list(min, max),
+               sib_base, sib_nums, sib_data) %>% 
+  pretty_print_scroll
+```
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn(df = df_uds, 
+               funcs = list(min, max, median, mean),
+               sib_base, sib_nums, sib_data) %>% 
+  pretty_print_scroll
+```
+
+
+## Tidy Eval for Iterating Fields {.smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn <- function(df, funcs, ...) {
+  # Combine user-passed field components into symbols
+  fields_syms <- crossing(...) %>% 
+    unite(fields, sep = "") %>% pull(fields) %>% syms
+  
+  # Capture/quote functions as expressions
+  funcs_exprs <- enexpr(funcs)[-1] # list, min, max => min, max
+  
+  # Map over function expressions and field symbols, evaluting with `summarize`
+  map_dfc(funcs_exprs, # min, max
+          function(func_expr) {
+            map_dfc(fields_syms, # SIB1MOB, SIB1YOB...
+                    function(field_sym) {
+                      ### <b>
+                      df %>% 
+                      summarize(
+                        # min_SIB1MOB = min(SIB1MOB, na.rm = TRUE)
+                        #        min, ...        SIB1MOB, ...
+                        !!paste0(func_expr, "_", field_sym) :=
+                          #  min, ...     SIB1MOB, ...
+                          (!!func_expr)(!!field_sym,   na.rm = TRUE))
+                      ### </b>
+                    })
+          })
+}
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+my_summary_fxn(df = df_uds, 
+               funcs = list(min, max),
+               sib_base, sib_nums, sib_data) %>% 
+  pretty_print
+```
+
+
+## Tidy Eval for Iterating Fields {.build .smaller}
+
+```{r echo=TRUE, eval=TRUE, error=TRUE}
+sib_nums <- 1:3
+sib_data <- c("MOB", "YOB", "AGD", "AGO")
+
+my_summary_fxn(df = df_uds, 
+               funcs = list(min, max, median, mean),
+               sib_base, sib_nums, sib_data) %>% 
+  pretty_print_scroll
+```
+
+
+
+# UDS 3 Data in REDCap
+
+
+## UDS 3 REDCap Data {.build}
+
+Why might metaprogramming be useful for managing UDS 3 data in REDCap?
+
+Small fake dataset using [REDCap Collaborative UDS 3.0 data dictionary](https://www.alz.washington.edu/NONMEMBER/FALL17/Data/Hunt.pdf) from <b>KU ADC</b>.
 
 ```{r uds3_data_1, results="asis"}
 options(knitr.kable.NA = '')
-dataset_1 <- 
-  tibble(ptid = c("PT01", 
-                  "PT02", "PT02",
-                  "PT03", "PT03", "PT03"),
+df_rc_small <- 
+  tibble(ptid = c("PT0001", 
+                  "PT0002", "PT0002",
+                  "PT0003", "PT0003", "PT0003"),
          packet = c("I",
                     "I", "F",
                     "I", "F", "T"),
@@ -453,22 +1026,37 @@ dataset_1 <-
                       NA_integer_, NA_integer_,
                       NA_integer_, NA_integer_, 1L),
   ) 
-dataset_1 %>% 
-  pretty_print()
+df_rc_small %>% 
+  pretty_print
 ```
 
-## UDS 3 Data (2)
 
-Why would metaprogramming be useful for manage UDS 3 data?
+## UDS 3 REDCap Data {.build}
 
-_Another_ sample dataset from Form A3. Here participant siblings' data can make up 20 possible siblings (`sib1`-`sib20`) by 7 fields (`mob`, `yob`, `agd`, `neu`, `pdx`, `moe`, `ago`) on three 3 forms (I, F, T): 20 x 7 x 3 = 420 fields.
+Why might metaprogramming be useful for managing UDS 3 data in REDCap?
+
+20 possible siblings (`sib1` - `sib20`)
+
+7 data points (`mob`, `yob`, `agd`, `neu`, `pdx`, `moe`, `ago`) 
+
+3 forms (initial, follow-up `fu_`, telephone `tele_`)
+
+420 fields
+
+
+## UDS 3 REDCap Data {.build .smaller}
+
+```{r coal_sparse_d1_1}
+df_rc_small %>% 
+  pretty_print
+```
 
 ```{r uds3_data_2, results="asis"}
 options(knitr.kable.NA = '')
-dataset_2 <-
-  tibble(ptid = c("PT01", 
-                  "PT02", "PT02",
-                  "PT03", "PT03", "PT03"),
+df_rc_big <-
+  tibble(ptid = c("PT0001", 
+                  "PT0002", "PT0002",
+                  "PT0003", "PT0003", "PT0003"),
          packet = c("I",
                     "I", "F",
                     "I", "F", "T"),
@@ -503,66 +1091,63 @@ dataset_2 <-
                           NA_integer_, NA_integer_, 72L),
          # `___` = rep("...", 6),
   ) 
-dataset_2 %>% 
-  pretty_print_scroll()
+df_rc_big %>% 
+  pretty_print
 ```
 
-## Coalescing Sparsity - Dataset 1
 
-```{r coal_sparse_d1_1}
-dataset_1 %>% 
-  pretty_print()
-```
-
-## Coalescing Sparsity - Dataset 1
+## Tidy Eval for Reducing Sparsity {.build}
 
 Use `dplyr::coalesce`.
 
 ```{r coal_sparse_d1_2a, echo=TRUE, eval=FALSE}
-dataset_1 %>% 
+df_rc_small %>% 
   mutate(sex = coalesce(sex, fu_sex, tele_sex))
 ```
 
 ```{r coal_sparse_d1_2b, echo=FALSE, eval=TRUE}
-dataset_1 %>% 
+df_rc_small %>% 
   mutate(sex = coalesce(sex, fu_sex, tele_sex)) %>% 
-  pretty_print()
+  pretty_print
 ```
 
-## Coalescing Sparsity - Dataset 1
+
+## Tidy Eval for Reducing Sparsity {.build}
 
 Remove redundant fields with `dplyr::select`.
 
 ```{r coal_sparse_d1_3a, echo=TRUE, eval=FALSE}
-dataset_1 %>% 
+df_rc_small %>%
   mutate(sex = coalesce(sex, fu_sex, tele_sex)) %>% 
   select(-fu_sex, -tele_sex)
 ```
 
 ```{r coal_sparse_d1_3b, echo=FALSE, eval=TRUE}
-dataset_1 %>% 
+df_rc_small %>% 
   mutate(sex = coalesce(sex, fu_sex, tele_sex)) %>% 
   select(-fu_sex, -tele_sex) %>% 
-  pretty_print()
+  pretty_print
 ```
 
-## Coalescing Sparsity - Dataset 2
+
+## Tidy Eval for Reducing Sparsity {.build .smaller}
 
 Easy enough with one field represented in initial, follow-up, and telephone forms.
 
-What about our second dataset from Form A3?
+What about our big REDCap dataset from Form A3?
 
 ```{r coal_sparse_d2_1, echo=FALSE, eval=TRUE}
-dataset_2 %>% 
-  pretty_print_scroll()
+df_rc_big %>% 
+  pretty_print
 ```
 
-## Coalescing Sparsity - Dataset 2
+
+## Tidy Eval for Reducing Sparsity {.build .smaller}
 
 Brute force approach.
 
 ```{r coal_sparse_d2_2a, echo=TRUE, eval=FALSE}
-dataset_2 %>% 
+df_rc_big %>% 
   mutate(sib1mob = coalesce(sib1mob, fu_sib1mob, tele_sib1mob),
          sib1yob = coalesce(sib1yob, fu_sib1yob, tele_sib1yob),
          sib1agd = coalesce(sib1agd, fu_sib1agd, tele_sib1agd)) %>% 
@@ -571,167 +1156,219 @@ dataset_2 %>%
 ```
 
 ```{r coal_sparse_d2_2b, echo=FALSE, eval=TRUE}
-(dataset_2_out <- dataset_2 %>% 
+(df_rc_big_out <- df_rc_big %>% 
    mutate(sib1mob = coalesce(sib1mob, fu_sib1mob, tele_sib1mob),
           sib1yob = coalesce(sib1yob, fu_sib1yob, tele_sib1yob),
           sib1agd = coalesce(sib1agd, fu_sib1agd, tele_sib1agd)) %>% 
    select(-fu_sib1mob, -tele_sib1mob, -fu_sib1yob, -tele_sib1yob,
           -fu_sib1agd, -tele_sib1agd)) %>% 
-  pretty_print_scroll()
+  pretty_print
 ```
 
-## Coalescing Sparsity - Dataset 2
+
+## Tidy Eval for Reducing Sparsity
 
 Brute force will be daunting once we start including the 19 other possible siblings (`sib2`--`sib20`) and the 4 other fields (`neu`, `pdx`, `moe`, `ago`).
 
 Tidy Eval to the rescue!
 
-## Coalescing Sparsity - Dataset 2
 
-First we need a function that finds only the initial visit field names.
+## Tidy Eval for Reducing Sparsity {.build .smaller}
 
-For example, in `dataset_2`...
+Input 
 
-> - `ptid`, `packet` are visit-packet independent.
+`df_rc_big`
 
-> - `sib1mob`, `sib1yob`, `sib1agd` is from the initial visit packet.
+irrelevant fields vector, `c("ptid", "packet")`
 
-> - `fu_sib1mob`, `fu_sib1yob`, `fu_sib1agd` is from the follow-up visit packet.
+```{r echo=FALSE, eval=TRUE}
+df_rc_big %>% pretty_print
+```
 
-> - `tele_sib1mob`, `tele_sib1yob`, `tele_sib1agd` is from the telephone visit packet.
+```{r coal_sparse_d2_5b, echo=FALSE, eval=TRUE}
+irrel_fields <- c("ptid", "packet")
+```
 
-## Coalescing Sparsity - Dataset 2
 
-So, given the field names
+## Tidy Eval for Reducing Sparsity
 
-`ptid`, `packet`, <br/>
-`sib1mob`, `sib1yob`, `sib1agd`, <br/>
-`fu_sib1mob`, `fu_sib1yob`, `fu_sib1agd`, </br> 
-`tele_sib1mob`, `tele_sib1yob`, `tele_sib1agd`
+Output
 
-... we'd like a function that returns
+```{r coal_sparse_d2_5c, echo=FALSE, eval=TRUE}
+df_rc_big_out %>% pretty_print
+```
 
-`sib1mob`, `sib1yob`, `sib1agd`
 
-## Coalescing Sparsity - Dataset 2
+## Tidy Eval for Reducing Sparsity {.build .smaller}
 
-```{r coal_sparse_d2_3, echo=TRUE, eval=TRUE}
+```{r coal_sparse_d2_3, echo=FALSE, eval=TRUE}
 reduce_ift_fieldnames <- function(ift_fields) {
   
-  # Locate fields beginning with `fu_` or `tele_`
-  ft_fields_loc <- str_detect(ift_fields, "^fu_|^tele_")
-  
-  # Return only `fu_` or `tele_` fields
-  ft_fields <- ift_fields[ft_fields_loc]
-  
   # Strip off `fu_` or `tele_` to get initial visit field names
-  i_fields <- str_replace_all(ft_fields, 
-                              pattern = "^fu_|^tele_", 
-                              replacement = "")
+  i_fields <- str_replace(ift_fields, 
+                          pattern = "^fu_|^tele_", 
+                          replacement = "")
   
   # There'll be repeats, so return only unique field names
   unique(i_fields)
 }
 ```
 
-## Coalescing Sparsity - Dataset 2
-
-Input:
-
-```{r coal_sparse_d2_4a, echo=TRUE, eval=TRUE}
-names(dataset_2)
-```
-
-Output:
-
-```{r coal_sparse_d2_4b, echo=TRUE, eval=TRUE}
-reduce_ift_fieldnames(names(dataset_2))
-```
-
-## Coalescing Sparsity - Dataset 2
-
-With this helper function `reduce_ift_fieldnames` in place, we can create a function that uses Tidy Eval to coalesce all initial visit, follow-up visit, and telephone visit fields.
-
-We'll call this new function `coalesce_all_ift_fields`.
-
-But let's first review the input and desired output.
-
-## Coalescing Sparsity - Dataset 2
-
-Input: `dataset_2`
-
-```{r coal_sparse_d2_5a, echo=FALSE, eval=TRUE}
-dataset_2 %>% pretty_print_scroll()
-```
-
-## Coalescing Sparsity - Dataset 2
-
-Output:
-
-```{r coal_sparse_d2_5b, echo=FALSE, eval=TRUE}
-dataset_2_out %>% pretty_print_scroll()
-```
-
-## Coalescing Sparsity - Dataset 2
-
 ```{r coal_sparse_d2_6, echo=TRUE, eval=TRUE}
-coalesce_all_ift_fields <- function(df) {
+coalesce_all_ift_fields <- function(df, irrel_fields) {
   # Get initial visit field names, follow-up names, and telephone names
-  i_fields <- reduce_ift_fieldnames(names(df))
-  f_fields <- paste0("fu_", i_fields)
-  t_fields <- paste0("tele_", i_fields)
+  ift_fields <- names(df)[-which(irrel_fields %in% names(df))]
   
-  # Iterate over each of the `i_fields`, applying `coalesce` and `select`
-  for (n in seq_along(i_fields)) { # n = 1, 2, 3, 4, ...
-    df <- df %>%
-      mutate( !!i_fields[n] := coalesce(df[[ i_fields[n] ]],
-                                        df[[ f_fields[n] ]],
-                                        df[[ t_fields[n] ]] )) %>%
-      select( -!!f_fields[[n]], -!!t_fields[[n]] )
-  }
-  # Return the dataframe
-  df
+  # Reduce initial, follow-up, telephone visit fields to initial fields only
+  i_fields <- reduce_ift_fieldnames(ift_fields)
+  
+  # Convert initial field strings to symbol expressions
+  i_fields_syms <- syms(i_fields)
+  
+  # Map over intial visit field symbols, coalescing IFT fields
+  # Each iteration returns coalesced field, column-bound to other coal'd fields
+  map_dfc(i_fields_syms,
+          function(i_field_sym) {
+            f_field_sym <- sym(paste0("fu_", i_field_sym))
+            t_field_sym <- sym(paste0("tele_", i_field_sym))
+            
+            df %>% 
+              select(!!i_field_sym, !!f_field_sym, !!t_field_sym) %>% 
+              mutate(!!i_field_sym := 
+                       coalesce(!!i_field_sym, !!f_field_sym, !!t_field_sym)) %>% 
+              select(-!!f_field_sym, -!!t_field_sym)
+          }) %>% 
+    # attach `irrel_fields` to the front of the returned data frame
+    bind_cols(df[, irrel_fields], .) 
 }
 ```
 
-## Coalescing Sparsity - Dataset 2
 
-```{r coal_sparse_d2_7a, echo=TRUE, eval=FALSE}
-dataset_2 %>% coalesce_all_ift_fields()
+## Tidy Eval for Reducing Sparsity {.build .smaller}
+
+```{r coal_sparse_d2_7b, echo=TRUE, eval=TRUE}
+irrel_fields <- c("ptid", "packet")
+
+df_rc_big %>% 
+  coalesce_all_ift_fields(irrel_fields) %>% 
+  pretty_print
 ```
 
-```{r coal_sparse_d2_7b, echo=FALSE, eval=TRUE}
-dataset_2 %>% coalesce_all_ift_fields() %>% pretty_print_scroll()
+
+## Tidy Eval for Reducing Sparsity {.build .smaller}
+
+```{r coal_sparse_d2_5a, echo=FALSE, eval=TRUE}
+df_rc_big %>% pretty_print
 ```
 
-## Coalescing Sparsity - Dataset 1
+```{r echo=FALSE, eval=TRUE}
+irrel_fields <- c("ptid", "packet")
 
-Let's test this new function on the first simple dataset.
-
-Input: `dataset_1`
-
-```{r}
-dataset_1 %>% pretty_print()
+df_rc_big %>% 
+  coalesce_all_ift_fields(irrel_fields) %>% 
+  pretty_print
 ```
 
-## Coalescing Sparsity - Dataset 1
+
+## Tidy Eval for Reducing Sparsity {.build .smaller}
+
+Let's test this new function on the small REDCap dataset.
+
+Input
+
+`df_rc_small`
+
+irrelevant fields, `c("ptid", "packet", "visitmo", "visitday", "visityr")`
+
+```{r echo=FALSE, eval=TRUE}
+df_rc_small %>% pretty_print
+```
+
+```{r echo=FALSE, eval=TRUE}
+irrel_fields <- c("ptid", "packet", "visitmo", "visitday", "visityr")
+```
+
+
+## Tidy Eval for Reducing Sparsity {.build}
 
 And...
 
-Output: `coalesce_all_ift_fields(dataset_1)`
-
-```{r}
-coalesce_all_ift_fields(dataset_1) %>% pretty_print()
+```{r echo=TRUE, eval=TRUE}
+df_rc_small %>% 
+  coalesce_all_ift_fields(irrel_fields) %>% 
+  pretty_print
 ```
 
 
+## Tidy Eval for Reducing Sparsity {.build .smaller}
+
+```{r echo=FALSE, eval=TRUE}
+df_rc_small %>%
+  pretty_print
+```
+
+<br/> &nbsp; <br/> &nbsp; <br/> &nbsp; <br/> &nbsp; <br/> &nbsp; <br/> &nbsp; <br/> &nbsp; <br/> &nbsp; <br/>
+
+```{r echo=FALSE, eval=TRUE}
+df_rc_small %>% 
+  coalesce_all_ift_fields(irrel_fields) %>% 
+  pretty_print
+```
 
 
+## Resources for Learning More Tidy Eval {.smaller .nobuild}
+
+<b>Advanced R (2nd edition)</b> by Hadley Wickham
+
+- [https://adv-r.hadley.nz/](https://adv-r.hadley.nz/)
+
+`rlang` package
+
+- [https://rlang.r-lib.org/](https://rlang.r-lib.org/)
+
+`rlang` cheatsheet 
+
+- [https://github.com/rstudio/cheatsheets/blob/master/tidyeval.pdf](https://github.com/rstudio/cheatsheets/blob/master/tidyeval.pdf)
+
+My GitHub with this slidestack
+
+- [https://github.com/ldnicolasmay](https://github.com/ldnicolasmay)
 
 
+## Thanks & Acknowledgements
+
+### Coordination / Planning
+
+- Elizabeth Robichaud @ NACC, Delilah Cook @ Wake Forest
+
+- Mark Espeland & ADRC Data Core Steering Committee
+
+### Resource Sharing
+
+- Suzanne Hunt & University of Kansas ADC
+
+- NACC
+
+### Feedback / Support
+
+- Hiroko Dodge, Jon Reader, & Michigan ADRC Data Mgmt. and Statistical Core
 
 
+## Tidy Eval for Reducing Sparsity
 
+For reference...
+
+Given the field names
+
+&nbsp; &nbsp; `sib1mob`, `sib1yob`, `sib1agd`,
+
+&nbsp; &nbsp; `fu_sib1mob`, `fu_sib1yob`, `fu_sib1agd`,
+
+&nbsp; &nbsp; `tele_sib1mob`, `tele_sib1yob`, `tele_sib1agd`
+
+`reduce_ift_fieldnames` returns
+
+&nbsp; &nbsp; `sib1mob`, `sib1yob`, `sib1agd`
 
 
 
