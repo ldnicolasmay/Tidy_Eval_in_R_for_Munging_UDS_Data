@@ -232,7 +232,7 @@ Extensive use of the pipe operator, `%>%` from `magrittr` or `%>>%` from `pipeR`
 
 > - `f(x, y)` is equivalent to `x %>% f(y)`
 
-> -  `h(g(f(x)))`is equivalent to `x %>% f %>% g %>% h`
+> -  `h(g(f(x)))` is equivalent to `x %>% f %>% g %>% h`
 
 ### Dot Placeholder
 
